@@ -1,0 +1,30 @@
+name: arm1
+on:
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: cumulative number of PRs to collect
+        default: "2500"
+      window:
+        description: escape window in days
+        default: "14"
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow numpy requests huggingface_hub
+      - run: python tad_arm1.py --selftest
+      - uses: actions/cache@v4
+        with:
+          path: prs.sqlite
+          key: arm1-db-${{ github.run_id }}
+          restore-keys: arm1-db-
+      - run: python tad_arm1.py collect --out prs.sqlite --sample ${{ inputs.sample }} --window ${{ inputs.window }}
+        env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
+      - run: python tad_arm1.py report --db prs.sqlite
+      - uses: actions/upload-artifact@v4
+        with: { name: prs-sqlite, path: prs.sqlite }
