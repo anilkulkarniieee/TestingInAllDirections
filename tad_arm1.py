@@ -76,21 +76,30 @@ def _session():
     if tok:
         s.headers["Authorization"] = f"Bearer {tok}"
     s.headers["Accept"] = "application/vnd.github+json"
+    s.headers["User-Agent"] = "tad-arm1/1.0"
     return s
 
 
 def gh(s, url, params=None):
-    while True:
-        r = s.get(url if url.startswith("http") else API + url, params=params, timeout=30)
-        if r.status_code in (403, 429) and r.headers.get("X-RateLimit-Remaining") == "0":
-            wait = max(int(r.headers.get("X-RateLimit-Reset", time.time() + 60)) - time.time(), 5)
-            print(f"rate limited; sleeping {wait:.0f}s", file=sys.stderr)
-            time.sleep(wait + 2)
-            continue
-        if r.status_code in (404, 409, 451):
-            return None
-        r.raise_for_status()
-        return r.json()
+    last_exc = None
+    for attempt in range(1, 6):
+        try:
+            r = s.get(url if url.startswith("http") else API + url, params=params, timeout=30)
+            if r.status_code in (403, 429) and r.headers.get("X-RateLimit-Remaining") == "0":
+                wait = max(int(r.headers.get("X-RateLimit-Reset", time.time() + 60)) - time.time(), 5)
+                print(f"rate limited; sleeping {wait:.0f}s", file=sys.stderr)
+                time.sleep(wait + 2)
+                continue
+            if r.status_code in (404, 409, 451):
+                return None
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            last_exc = e
+            sleep_for = min(2 ** attempt, 15)
+            print(f"GitHub API request failed (attempt {attempt}/5): {e}. Retrying in {sleep_for}s.", file=sys.stderr)
+            time.sleep(sleep_for)
+    raise last_exc if last_exc is not None else RuntimeError("GitHub API request failed")
 
 
 def repo_slug(url):
