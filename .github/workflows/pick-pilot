@@ -1,0 +1,24 @@
+name: pick-pilot
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: aidev or search
+        default: aidev
+      top:
+        description: number of shortlisted repos
+        default: "10"
+jobs:
+  pick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow numpy requests huggingface_hub
+      - run: python pick_pilot.py --selftest && python pick_public_pilot.py --selftest
+      - run: python pick_public_pilot.py --source ${{ inputs.source }} --top ${{ inputs.top }} --scan 60 --csv shortlist.csv | tee shortlist.txt
+        env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
+      - uses: actions/upload-artifact@v4
+        with: { name: shortlist, path: "shortlist.csv\nshortlist.txt" }
