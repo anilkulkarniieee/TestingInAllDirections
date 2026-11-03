@@ -22,6 +22,7 @@ UNDER-counts escapes: treat results as a bound, not a measurement.
 """
 import argparse, datetime as dt, math, os, re, sqlite3, sys, time
 import numpy as np
+import requests
 
 COLS = dict(id="id", number="number", repo="repo_url", agent="agent",
             merged_at="merged_at", state="state")
@@ -70,7 +71,6 @@ def summarize(F, E, label="all"):
 
 # ---------- GitHub access ----------
 def _session():
-    import requests
     s = requests.Session()
     tok = os.environ.get("GITHUB_TOKEN")
     if tok:
@@ -90,7 +90,7 @@ def gh(s, url, params=None):
                 print(f"rate limited; sleeping {wait:.0f}s", file=sys.stderr)
                 time.sleep(wait + 2)
                 continue
-            if r.status_code in (404, 409, 451):
+            if r.status_code in (404, 409, 422, 451):
                 return None
             r.raise_for_status()
             return r.json()
