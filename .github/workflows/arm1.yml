@@ -2,14 +2,17 @@ name: arm1
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "recheck (upgrade existing prs.sqlite) or collect (add PRs)"
+        default: "recheck"
       sample:
-        description: cumulative number of PRs to collect
-        default: "2500"
+        description: cumulative PRs to collect (collect mode only)
+        default: "20000"
       window:
         description: escape window in days
         default: "14"
 jobs:
-  collect:
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -18,13 +21,22 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install pandas pyarrow numpy requests huggingface_hub
       - run: python tad_arm1.py --selftest
+      # Put your uploaded prs.sqlite in the repo root (commit it) for the first recheck;
+      # later runs restore it from the cache.
       - uses: actions/cache@v4
         with:
           path: prs.sqlite
           key: arm1-db-${{ github.run_id }}
           restore-keys: arm1-db-
-      - run: python tad_arm1.py collect --out prs.sqlite --sample ${{ inputs.sample }} --window ${{ inputs.window }}
+      - name: recheck
+        if: inputs.mode == 'recheck'
+        run: python tad_arm1.py recheck --db prs.sqlite --window ${{ inputs.window }}
+        env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
+      - name: collect
+        if: inputs.mode == 'collect'
+        run: python tad_arm1.py collect --out prs.sqlite --sample ${{ inputs.sample }} --window ${{ inputs.window }}
         env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
       - run: python tad_arm1.py report --db prs.sqlite
       - uses: actions/upload-artifact@v4
+        if: always()
         with: { name: prs-sqlite, path: prs.sqlite }
