@@ -28,9 +28,10 @@ v2 changes (after validating a 20k-sample run)
   * `recheck` upgrades a v1 database in place (resumable)
   * per-agent rows print only when there are >= 10 escapes
 Escape proxy still UNDER-counts escapes: treat results as a bound.
-"""
+ """
 import argparse, datetime as dt, math, os, re, sqlite3, sys, time
 import numpy as np
+import requests
 
 COLS = dict(id="id", number="number", repo="repo_url", agent="agent",
             merged_at="merged_at", state="state")
@@ -79,7 +80,6 @@ def summarize(F, E, label="all"):
 
 # ---------- GitHub access ----------
 def _session():
-    import requests
     s = requests.Session()
     tok = os.environ.get("GITHUB_TOKEN")
     if tok:
@@ -88,18 +88,36 @@ def _session():
     return s
 
 
-def gh(s, url, params=None):
-    while True:
-        r = s.get(url if url.startswith("http") else API + url, params=params, timeout=30)
+def gh(s, url, params=None, retries=5):
+    for attempt in range(retries + 1):
+        try:
+            r = s.get(url if url.startswith("http") else API + url, params=params, timeout=30)
+        except requests.exceptions.RequestException as e:
+            if attempt >= retries:
+                raise
+            wait = min(2 ** attempt, 30)
+            print(f"GitHub request failed ({e}); retrying in {wait}s ({attempt + 1}/{retries})", file=sys.stderr)
+            time.sleep(wait)
+            continue
+
         if r.status_code in (403, 429) and r.headers.get("X-RateLimit-Remaining") == "0":
             wait = max(int(r.headers.get("X-RateLimit-Reset", time.time() + 60)) - time.time(), 5)
             print(f"rate limited; sleeping {wait:.0f}s", file=sys.stderr)
             time.sleep(wait + 2)
             continue
+        if r.status_code >= 500 and r.status_code != 501:
+            if attempt >= retries:
+                r.raise_for_status()
+            wait = min(2 ** attempt, 30)
+            print(f"GitHub API returned {r.status_code}; retrying in {wait}s ({attempt + 1}/{retries})", file=sys.stderr)
+            time.sleep(wait)
+            continue
         if r.status_code in (404, 409, 451):
             return None
         r.raise_for_status()
         return r.json()
+
+    raise RuntimeError(f"GitHub request failed after {retries} retries: {url}")
 
 
 def repo_slug(url):
@@ -287,3 +305,4 @@ if __name__ == "__main__":
     elif a.cmd == "recheck": recheck(a)
     elif a.cmd == "report": report(a)
     else: p.print_help()
+
