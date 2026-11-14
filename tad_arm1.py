@@ -98,6 +98,12 @@ def gh(s, url, params=None):
             continue
         if r.status_code in (404, 409, 451):
             return None
+        if r.status_code == 422:
+            # Some records in the source dataset point to PRs that the API
+            # cannot resolve. Treat them like unavailable PRs so one bad row
+            # does not abort a long-running collection/recheck.
+            print(f"GitHub API returned 422 for {r.url}: {r.text[:500]}", file=sys.stderr)
+            return None
         r.raise_for_status()
         return r.json()
 
