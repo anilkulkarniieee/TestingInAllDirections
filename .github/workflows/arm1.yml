@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "recheck (upgrade existing prs.sqlite) or collect (add PRs)"
+        description: "recheck | collect | audit"
         default: "recheck"
       sample:
         description: cumulative PRs to collect (collect mode only)
@@ -14,7 +14,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 335
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,7 +36,12 @@ jobs:
         if: inputs.mode == 'collect'
         run: python tad_arm1.py collect --out prs.sqlite --sample ${{ inputs.sample }} --window ${{ inputs.window }}
         env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
+      - name: audit
+        if: inputs.mode == 'audit'
+        run: python tad_arm1.py audit --db prs.sqlite --n 50 --window ${{ inputs.window }} | tee audit.csv
+        env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
       - run: python tad_arm1.py report --db prs.sqlite
+        if: always()
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: prs-sqlite, path: prs.sqlite }
+        with: { name: prs-sqlite, path: "prs.sqlite\naudit.csv", if-no-files-found: ignore }
