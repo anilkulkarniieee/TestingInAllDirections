@@ -28,10 +28,9 @@ v2 changes (after validating a 20k-sample run)
   * `recheck` upgrades a v1 database in place (resumable)
   * per-agent rows print only when there are >= 10 escapes
 Escape proxy still UNDER-counts escapes: treat results as a bound.
- """
+"""
 import argparse, datetime as dt, math, os, re, sqlite3, sys, time
 import numpy as np
-import requests
 
 COLS = dict(id="id", number="number", repo="repo_url", agent="agent",
             merged_at="merged_at", state="state")
@@ -80,6 +79,7 @@ def summarize(F, E, label="all"):
 
 # ---------- GitHub access ----------
 def _session():
+    import requests
     s = requests.Session()
     tok = os.environ.get("GITHUB_TOKEN")
     if tok:
@@ -88,36 +88,18 @@ def _session():
     return s
 
 
-def gh(s, url, params=None, retries=5):
-    for attempt in range(retries + 1):
-        try:
-            r = s.get(url if url.startswith("http") else API + url, params=params, timeout=30)
-        except requests.exceptions.RequestException as e:
-            if attempt >= retries:
-                raise
-            wait = min(2 ** attempt, 30)
-            print(f"GitHub request failed ({e}); retrying in {wait}s ({attempt + 1}/{retries})", file=sys.stderr)
-            time.sleep(wait)
-            continue
-
+def gh(s, url, params=None):
+    while True:
+        r = s.get(url if url.startswith("http") else API + url, params=params, timeout=30)
         if r.status_code in (403, 429) and r.headers.get("X-RateLimit-Remaining") == "0":
             wait = max(int(r.headers.get("X-RateLimit-Reset", time.time() + 60)) - time.time(), 5)
             print(f"rate limited; sleeping {wait:.0f}s", file=sys.stderr)
             time.sleep(wait + 2)
             continue
-        if r.status_code >= 500 and r.status_code != 501:
-            if attempt >= retries:
-                r.raise_for_status()
-            wait = min(2 ** attempt, 30)
-            print(f"GitHub API returned {r.status_code}; retrying in {wait}s ({attempt + 1}/{retries})", file=sys.stderr)
-            time.sleep(wait)
-            continue
         if r.status_code in (404, 409, 451):
             return None
         r.raise_for_status()
         return r.json()
-
-    raise RuntimeError(f"GitHub request failed after {retries} retries: {url}")
 
 
 def repo_slug(url):
@@ -140,8 +122,9 @@ def pre_merge_failure(s, slug, number):
     return 0
 
 
-def classify(commits, number, merge_sha, t0, t1):
-    """Pure function. Returns (E_revert, E_fix) for commits inside [t0, t1]."""
+def classify(commits, number, merge_sha, t0, t1, matches=None):
+    """Pure function. Returns (E_revert, E_fix) for commits inside [t0, t1].
+    If `matches` is a list, matching commits are appended to it (for audits)."""
     rev = fix = 0
     for c in commits:
         when = dt.datetime.fromisoformat(c["commit"]["committer"]["date"].replace("Z", "+00:00"))
@@ -154,8 +137,10 @@ def classify(commits, number, merge_sha, t0, t1):
         refs = (merge_sha and merge_sha[:7] in msg) or re.search(rf"(?<![\w]){'#'}{number}\b", msg)
         if re.match(r"(?i)\s*revert", msg) and refs:
             rev = 1
+            if matches is not None: matches.append(("revert", c.get("sha"), first))
         elif refs and re.search(r"(?i)\b(fix|fixes|fixed|hotfix|bugfix|regression)\b", first):
             fix = 1
+            if matches is not None: matches.append(("fix", c.get("sha"), first))
     return rev, fix
 
 
@@ -236,16 +221,43 @@ def recheck(a):
     db.commit()
 
 
+def audit(a):
+    """Print a random sample of E_fix-only escapes with their matching commit, for manual labelling."""
+    db = sqlite3.connect(a.db)
+    rows = db.execute("select slug, number, merge_sha, merged_at from pr where E=0 and E_fix=1 "
+                      "and truncated=0 order by random() limit ?", (a.n,)).fetchall()
+    s, cache = _session(), {}
+    print("pr_url,match_type,commit_url,commit_title,is_real_escape(y/n)")
+    for slug, n, sha, merged_at in rows:
+        t0 = dt.datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
+        escapes_in_window(s, slug, n, sha, merged_at, a.window, cache)
+        day = t0.replace(hour=0, minute=0, second=0, microsecond=0)
+        commits, _ = cache[(slug, day.date().isoformat())]
+        m = []
+        classify(commits, n, sha, t0, t0 + dt.timedelta(days=a.window), m)
+        for kind, csha, title in m:
+            print(f'https://github.com/{slug}/pull/{n},{kind},https://github.com/{slug}/commit/{csha},'
+                  f'"{title.replace(chr(34), chr(39))}",')
+
+
 def report(a):
     rows = sqlite3.connect(a.db).execute(
         "select agent, F, E, coalesce(E_fix,0), coalesce(truncated,0) from pr "
-        "where coalesce(merged_at,'') != 'unavailable'").fetchall()
+        "where merged_at is not null and merged_at != 'unavailable'").fetchall()
+    pending = sqlite3.connect(a.db).execute(
+        "select count(*) from pr where merged_at is null").fetchone()[0]
+    print(f"not yet rechecked (excluded): {pending}")
+    if not getattr(a, "include_truncated", False):
+        n0 = len(rows)
+        rows = [r for r in rows if not r[4]]
+        print(f"excluded {n0 - len(rows)} PRs whose 14-day commit window exceeded 1,000 commits "
+              f"(escapes cannot be detected reliably there)")
     if not rows:
         sys.exit("no rows")
     agents = np.array([r[0] for r in rows])
     F = np.array([r[1] for r in rows]); E = np.array([r[2] for r in rows])
     EB = np.array([bool(r[2] or r[3]) for r in rows]); T = np.array([r[4] for r in rows])
-    print(f"rows={len(rows)}  windows truncated after pagination: {int(T.sum())}")
+    print(f"rows analysed={len(rows)}")
     print("-- E = revert only")
     print(summarize(F, E))
     print("-- E_broad = revert OR fix/hotfix/regression commit referencing the PR")
@@ -296,13 +308,16 @@ if __name__ == "__main__":
     c = sub.add_parser("collect"); c.add_argument("--out", default="prs.sqlite")
     c.add_argument("--sample", type=int, default=2000); c.add_argument("--window", type=int, default=14)
     r = sub.add_parser("report"); r.add_argument("--db", default="prs.sqlite")
+    au = sub.add_parser("audit"); au.add_argument("--db", default="prs.sqlite")
+    au.add_argument("--n", type=int, default=50); au.add_argument("--window", type=int, default=14)
+    r.add_argument("--include-truncated", action="store_true")
     k = sub.add_parser("recheck"); k.add_argument("--db", default="prs.sqlite")
     k.add_argument("--window", type=int, default=14)
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args()
     if a.selftest or a.cmd == "selftest": selftest()
     elif a.cmd == "collect": collect(a)
+    elif a.cmd == "audit": audit(a)
     elif a.cmd == "recheck": recheck(a)
     elif a.cmd == "report": report(a)
     else: p.print_help()
-
