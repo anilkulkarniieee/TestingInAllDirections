@@ -11,6 +11,8 @@ on:
       window:
         description: escape window in days
         default: "14"
+permissions:
+  contents: write
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -21,13 +23,7 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install pandas pyarrow numpy requests huggingface_hub
       - run: python tad_arm1.py --selftest
-      # Put your uploaded prs.sqlite in the repo root (commit it) for the first recheck;
-      # later runs restore it from the cache.
-      - uses: actions/cache@v4
-        with:
-          path: prs.sqlite
-          key: arm1-db-${{ github.run_id }}
-          restore-keys: arm1-db-
+      # prs.sqlite is committed to the repo root and updated by the last step of every run.
       - name: recheck
         if: inputs.mode == 'recheck'
         run: python tad_arm1.py recheck --db prs.sqlite --window ${{ inputs.window }}
@@ -45,3 +41,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: prs-sqlite, path: "prs.sqlite\naudit.csv", if-no-files-found: ignore }
+      - name: save progress to the repo
+        if: always()
+        run: |
+          git config user.name "arm1-bot"
+          git config user.email "arm1-bot@users.noreply.github.com"
+          git add prs.sqlite
+          git commit -m "arm1: save progress (${{ inputs.mode }})" || echo "nothing to commit"
+          git pull --rebase origin ${{ github.ref_name }} || true
+          git push origin HEAD:${{ github.ref_name }}
