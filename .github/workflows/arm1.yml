@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "recheck | collect | audit"
+        description: "recheck | collect | refine | audit"
         default: "recheck"
       sample:
         description: cumulative PRs to collect (collect mode only)
@@ -32,10 +32,13 @@ jobs:
         if: inputs.mode == 'collect'
         run: python tad_arm1.py collect --out prs.sqlite --sample ${{ inputs.sample }} --window ${{ inputs.window }}
         env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
+      - name: refine
+        if: inputs.mode == 'refine'
+        run: python tad_arm1.py refine --db prs.sqlite --window ${{ inputs.window }}
+        env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
       - name: audit
         if: inputs.mode == 'audit'
-        run: python tad_arm1.py audit --db prs.sqlite --n 50 --window ${{ inputs.window }} | tee audit.csv
-        env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
+        run: python tad_arm1.py audit --db prs.sqlite --n 50 > audit.csv
       - run: python tad_arm1.py report --db prs.sqlite
         if: always()
       - uses: actions/upload-artifact@v4
