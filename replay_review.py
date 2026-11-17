@@ -83,9 +83,9 @@ def boot_ci(fn, score, y, n=500, seed=5):
     return (vals[int(.025 * len(vals))], vals[int(.975 * len(vals))]) if vals else (float("nan"),) * 2
 
 
-def report(rows, scores, label):
+def report(rows, scores, label, name="review agent"):
     y = [int(r[label]) for r in rows]
-    sets = {"review agent": scores, "CI failure (F)": [float(r["F"]) for r in rows],
+    sets = {name: scores, "CI failure (F)": [float(r["F"]) for r in rows],
             "size (lines)": [math.log1p(r["additions"] + r["deletions"]) for r in rows]}
     print(f"PRs={len(y)}  escapes ({label})={sum(y)}  base rate={sum(y)/len(y):.3%}")
     for name, sc in sets.items():
