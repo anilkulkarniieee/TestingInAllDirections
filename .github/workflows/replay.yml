@@ -8,7 +8,7 @@ on:
         description: "public repo to replay, e.g. Yeraze/meshmonitor"
         default: "Yeraze/meshmonitor"
       mode:
-        description: "collect | review | both"
+        description: "collect | risk | review (review needs ANTHROPIC_API_KEY, optional)"
         default: "collect"
       months:
         description: "months of history to collect"
@@ -34,13 +34,13 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: pip install numpy requests
-      - run: python tad_arm1.py --selftest && python replay_collect.py --selftest && python replay_review.py --selftest
+      - run: python tad_arm1.py --selftest && python replay_collect.py --selftest && python replay_review.py --selftest && python replay_risk.py --selftest
       - name: set data path
         run: |
           mkdir -p data
           echo "DATA=data/$(echo '${{ inputs.repo }}' | tr '/' '_').jsonl" >> "$GITHUB_ENV"
       - name: collect
-        if: inputs.mode == 'collect' || inputs.mode == 'both'
+        if: inputs.mode == 'collect'
         run: python replay_collect.py --repo "${{ inputs.repo }}" --months ${{ inputs.months }} --max-prs ${{ inputs.max_prs }} --out "$DATA"
         env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
       - name: escape counts
@@ -56,8 +56,13 @@ jobs:
               print(f"- {k}: {sum(r[k] for r in ok)} escapes")
           print("- Aim for at least 30 E_strict escapes before running the review agent.")
           PY
-      - name: review
-        if: inputs.mode == 'review' || inputs.mode == 'both'
+      - name: risk model (no LLM, no API key)
+        if: inputs.mode == 'risk'
+        run: |
+          python replay_risk.py --data "$DATA" --label ${{ inputs.label }} | tee review_report.txt
+          { echo '### TAD risk model vs baselines (walk-forward)'; echo '```'; cat review_report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: review (LLM agent, optional)
+        if: inputs.mode == 'review'
         run: |
           FLAG=""; if [ "${{ inputs.mock }}" = "true" ]; then FLAG="--mock"; fi
           python replay_review.py --data "$DATA" --label ${{ inputs.label }} --max-prs ${{ inputs.review_prs }} $FLAG | tee review_report.txt
