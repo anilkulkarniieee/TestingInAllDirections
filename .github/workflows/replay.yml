@@ -1,0 +1,77 @@
+name: replay
+permissions:
+  contents: write
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "public repo to replay, e.g. Yeraze/meshmonitor"
+        default: "Yeraze/meshmonitor"
+      mode:
+        description: "collect | review | both"
+        default: "collect"
+      months:
+        description: "months of history to collect"
+        default: "6"
+      max_prs:
+        description: "collect: max PRs this run (0 = all, resumable)"
+        default: "200"
+      label:
+        description: "escape label: E_strict | E | E_clean"
+        default: "E_strict"
+      review_prs:
+        description: "review: most recent PRs to score (0 = all)"
+        default: "100"
+      mock:
+        description: "review with random scores, no API cost (true/false)"
+        default: "false"
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 335
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install numpy requests
+      - run: python tad_arm1.py --selftest && python replay_collect.py --selftest && python replay_review.py --selftest
+      - name: set data path
+        run: |
+          mkdir -p data
+          echo "DATA=data/$(echo '${{ inputs.repo }}' | tr '/' '_').jsonl" >> "$GITHUB_ENV"
+      - name: collect
+        if: inputs.mode == 'collect' || inputs.mode == 'both'
+        run: python replay_collect.py --repo "${{ inputs.repo }}" --months ${{ inputs.months }} --max-prs ${{ inputs.max_prs }} --out "$DATA"
+        env: { GITHUB_TOKEN: "${{ secrets.GH_PAT }}" }
+      - name: escape counts
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          p = os.environ["DATA"]
+          rows = [json.loads(l) for l in open(p)] if os.path.exists(p) else []
+          ok = [r for r in rows if not r["truncated"]]
+          print(f"### Collected {len(rows)} PRs for ${{ inputs.repo }} ({len(rows)-len(ok)} excluded: window truncated)")
+          for k in ("E", "E_strict", "E_clean"):
+              print(f"- {k}: {sum(r[k] for r in ok)} escapes")
+          print("- Aim for at least 30 E_strict escapes before running the review agent.")
+          PY
+      - name: review
+        if: inputs.mode == 'review' || inputs.mode == 'both'
+        run: |
+          FLAG=""; if [ "${{ inputs.mock }}" = "true" ]; then FLAG="--mock"; fi
+          python replay_review.py --data "$DATA" --label ${{ inputs.label }} --max-prs ${{ inputs.review_prs }} $FLAG | tee review_report.txt
+          { echo '### Review agent vs baselines'; echo '```'; cat review_report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        env: { ANTHROPIC_API_KEY: "${{ secrets.ANTHROPIC_API_KEY }}" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: replay-output, path: "data\nreview_report.txt", if-no-files-found: ignore }
+      - name: save progress to the repo
+        if: always()
+        run: |
+          git config user.name "replay-bot"
+          git config user.email "replay-bot@users.noreply.github.com"
+          git add data
+          git commit -m "replay: ${{ inputs.repo }} (${{ inputs.mode }})" || echo "nothing to commit"
+          git pull --rebase origin ${{ github.ref_name }} || true
+          git push origin HEAD:${{ github.ref_name }}
