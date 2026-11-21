@@ -19,6 +19,9 @@ on:
       label:
         description: "escape label: E_strict | E | E_clean"
         default: "E_strict"
+      warmup:
+        description: "risk mode: share of oldest PRs used only for learning"
+        default: "0.3"
       review_prs:
         description: "review: most recent PRs to score (0 = all)"
         default: "100"
@@ -59,7 +62,7 @@ jobs:
       - name: risk model (no LLM, no API key)
         if: inputs.mode == 'risk'
         run: |
-          python replay_risk.py --data "$DATA" --label ${{ inputs.label }} | tee review_report.txt
+          python replay_risk.py --data "$DATA" --label ${{ inputs.label }} --warmup ${{ inputs.warmup }} | tee review_report.txt
           { echo '### TAD risk model vs baselines (walk-forward)'; echo '```'; cat review_report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: review (LLM agent, optional)
         if: inputs.mode == 'review'
