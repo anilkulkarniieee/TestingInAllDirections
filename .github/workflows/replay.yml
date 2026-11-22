@@ -22,6 +22,9 @@ on:
       warmup:
         description: "risk mode: share of oldest PRs used only for learning"
         default: "0.3"
+      model:
+        description: "risk mode: v1 (original) or v2 (frozen, size-anchored)"
+        default: "v1"
       review_prs:
         description: "review: most recent PRs to score (0 = all)"
         default: "100"
@@ -58,11 +61,17 @@ jobs:
           for k in ("E", "E_strict", "E_clean"):
               print(f"- {k}: {sum(r[k] for r in ok)} escapes")
           print("- Aim for at least 30 E_strict escapes before running the review agent.")
+          import collections
+          m = collections.defaultdict(lambda: [0, 0, 0])
+          for r in ok:
+              k = r["merged_at"][:7]; m[k][0] += 1; m[k][1] += r["E_strict"]; m[k][2] += r["E"]
+          print("\n| month | PRs | E_strict | E (reverts) |\n|---|---|---|---|")
+          for k in sorted(m): print(f"| {k} | {m[k][0]} | {m[k][1]} | {m[k][2]} |")
           PY
       - name: risk model (no LLM, no API key)
         if: inputs.mode == 'risk'
         run: |
-          python replay_risk.py --data "$DATA" --label ${{ inputs.label }} --warmup ${{ inputs.warmup }} | tee review_report.txt
+          python replay_risk.py --data "$DATA" --label ${{ inputs.label }} --warmup ${{ inputs.warmup }} --model ${{ inputs.model }} | tee review_report.txt
           { echo '### TAD risk model vs baselines (walk-forward)'; echo '```'; cat review_report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: review (LLM agent, optional)
         if: inputs.mode == 'review'
