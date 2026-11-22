@@ -67,6 +67,27 @@ def walk_forward(rows, label, window=14, lr=0.2, l2=1e-3):
     return rows, scores
 
 
+def paired(rows, sc, label, n=500, seed=11):
+    """Paired bootstrap of the AUROC difference: risk model minus each baseline (same PRs)."""
+    import random
+    from replay_review import auroc
+    y = [int(r[label]) for r in rows]
+    base = {"CI failure (F)": [float(r["F"]) for r in rows],
+            "size (lines)": [math.log1p(r["additions"] + r["deletions"]) for r in rows]}
+    rng = random.Random(seed)
+    for name, b in base.items():
+        diffs = []
+        for _ in range(n):
+            idx = [rng.randrange(len(y)) for _ in y]
+            yy = [y[i] for i in idx]
+            if not any(yy) or all(yy): continue
+            diffs.append(auroc([sc[i] for i in idx], yy) - auroc([b[i] for i in idx], yy))
+        diffs.sort()
+        d0 = auroc(sc, y) - auroc(b, y)
+        print(f"AUROC difference, model minus {name}: {d0:+.3f} "
+              f"[{diffs[int(.025*len(diffs))]:+.3f},{diffs[int(.975*len(diffs))]:+.3f}]")
+
+
 def main(a):
     rows = [json.loads(l) for l in open(a.data)]
     rows = [r for r in rows if not r["truncated"]]
@@ -74,6 +95,7 @@ def main(a):
     k = int(len(rows) * a.warmup)
     print(f"warm-up: first {k} PRs used for learning only")
     report(rows[k:], sc[k:], a.label, name="TAD risk model")
+    paired(rows[k:], sc[k:], a.label)
 
 
 def selftest():
