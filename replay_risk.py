@@ -50,20 +50,30 @@ class State:
             (a[0] + 0.05) / (a[1] + 1), overlap, sum(self.recent[-50:]) / max(len(self.recent), 1)])
 
 
-def walk_forward(rows, label, window=14, lr=0.2, l2=1e-3):
+# Model v2 (frozen before the confirmatory repository was collected): start from the PR-size
+# baseline and move away from it only when evidence supports it. Fewer, less noisy features
+# (size, files, config, tests, docs-only, path overlap, recent rate), strong L2 pull toward a
+# size-only prior, smaller steps, capped positive weight.
+V2_MASK = np.array([1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1], float)
+V2_PRIOR = np.array([3.0] + [0.0] * (NF - 1))
+
+
+def walk_forward(rows, label, window=14, lr=0.2, l2=1e-3, model="v1"):
     rows = sorted(rows, key=lambda r: r["merged_at"])
-    w, b, st, nxt = np.zeros(NF), -3.0, State(), 0
+    mask, w0, cap = (V2_MASK, V2_PRIOR, 10.0) if model == "v2" else (np.ones(NF), np.zeros(NF), 30.0)
+    if model == "v2": lr, l2 = 0.05, 0.05
+    w, b, st, nxt = w0.copy(), -3.0, State(), 0
     npos = nneg = 1; scores = []
     for r in rows:
         cut = parse_t(r["merged_at"]) - dt.timedelta(days=window)
         while nxt < len(rows) and parse_t(rows[nxt]["merged_at"]) <= cut:   # labels now observable
-            q = rows[nxt]; y = int(q[label]); x = st.features(q)
-            wt = min(30.0, nneg / npos) if y else 1.0
+            q = rows[nxt]; y = int(q[label]); x = st.features(q) * mask
+            wt = min(cap, nneg / npos) if y else 1.0
             g = sigmoid(w @ x + b) - y
-            w -= lr * (wt * g * x + l2 * w); b -= lr * wt * g
+            w -= lr * (wt * g * x + l2 * (w - w0)); b -= lr * wt * g
             npos += y; nneg += 1 - y
             st.reveal(q, y); nxt += 1
-        scores.append(sigmoid(w @ st.features(r) + b))                         # score BEFORE learning from r
+        scores.append(sigmoid(w @ (st.features(r) * mask) + b))                         # score BEFORE learning from r
     return rows, scores
 
 
@@ -91,10 +101,10 @@ def paired(rows, sc, label, n=500, seed=11):
 def main(a):
     rows = [json.loads(l) for l in open(a.data)]
     rows = [r for r in rows if not r["truncated"]]
-    rows, sc = walk_forward(rows, a.label, a.window)
+    rows, sc = walk_forward(rows, a.label, a.window, model=a.model)
     k = int(len(rows) * a.warmup)
     print(f"warm-up: first {k} PRs used for learning only")
-    report(rows[k:], sc[k:], a.label, name="TAD risk model")
+    report(rows[k:], sc[k:], a.label, name=f"TAD risk model {a.model}")
     paired(rows[k:], sc[k:], a.label)
 
 
@@ -115,6 +125,10 @@ def selftest():
     flipped = [dict(r, E_strict=1 - r["E_strict"]) if r["number"] >= 900 else r for r in rows]
     _, sc2 = walk_forward(flipped, "E_strict")
     assert all(abs(a - b) < 1e-12 for a, b in zip(sc[:900], sc2[:900])), "leakage"
+    r3, sc3 = walk_forward(rows, "E_strict", model="v2")
+    assert auroc(sc3[300:], [r["E_strict"] for r in r3][300:]) > 0.7
+    _, sc4 = walk_forward(flipped, "E_strict", model="v2")
+    assert all(abs(a - b) < 1e-12 for a, b in zip(sc3[:900], sc4[:900])), "leakage v2"
     print("selftest OK")
 
 
@@ -122,5 +136,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--data"); p.add_argument("--label", default="E_strict", choices=["E", "E_strict", "E_clean"])
     p.add_argument("--window", type=int, default=14); p.add_argument("--warmup", type=float, default=0.3)
+    p.add_argument("--model", default="v1", choices=["v1", "v2"])
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args(); selftest() if a.selftest else main(a)
