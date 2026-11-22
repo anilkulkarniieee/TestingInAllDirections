@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Inter-rater agreement for the escape audit.
+  python kappa.py audit_final.csv second_reviewer.csv
+Rows are matched on (pr_url, commit_url). Label column = last column; values y / n / ?.
+Reports raw agreement and Cohen's kappa on rows both raters labelled y or n."""
+import csv, sys, math
+
+def load(p):
+    rows = list(csv.reader(open(p)))[1:]
+    return {(r[0], r[1]): r[-1].strip().lower() or "?" for r in rows if len(r) >= 3}
+
+def kappa(a, b):
+    keys = [k for k in a if k in b and a[k] in "yn" and b[k] in "yn"]
+    n = len(keys)
+    if n == 0: return n, float("nan"), float("nan")
+    agree = sum(a[k] == b[k] for k in keys) / n
+    pa = sum(a[k] == "y" for k in keys) / n; pb = sum(b[k] == "y" for k in keys) / n
+    pe = pa * pb + (1 - pa) * (1 - pb)
+    return n, agree, (agree - pe) / (1 - pe) if pe < 1 else float("nan")
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--selftest":
+        a = {(str(i), "c"): v for i, v in enumerate("yynnyn")}
+        b = dict(a); assert kappa(a, b)[2] == 1.0
+        b[("0", "c")] = "n"; n, ag, k = kappa(a, b); assert abs(ag - 5/6) < 1e-9 and k < 1
+        print("selftest OK"); sys.exit()
+    a, b = load(sys.argv[1]), load(sys.argv[2])
+    n, agree, k = kappa(a, b)
+    unclear = sum(1 for key in a if key in b and (a[key] == "?" or b[key] == "?"))
+    print(f"rows compared (both y/n): {n}   unclear in either: {unclear}")
+    print(f"raw agreement: {agree:.2%}   Cohen's kappa: {k:.2f}")
+    print("kappa guide: <0.40 poor, 0.40-0.60 moderate, 0.60-0.80 substantial, >0.80 almost perfect")
