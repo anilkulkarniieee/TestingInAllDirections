@@ -101,6 +101,12 @@ def paired(rows, sc, label, n=500, seed=11):
 def main(a):
     rows = [json.loads(l) for l in open(a.data)]
     rows = [r for r in rows if not r["truncated"]]
+    # Right-censoring: a PR merged in the last `censor_days` of the history has an incomplete
+    # escape window, so it can look safe only because we have not waited long enough.
+    last = max(parse_t(r["merged_at"]) for r in rows)
+    n0 = len(rows)
+    rows = [r for r in rows if parse_t(r["merged_at"]) <= last - dt.timedelta(days=a.censor_days)]
+    print(f"excluded {n0 - len(rows)} PRs merged in the last {a.censor_days} days (incomplete escape window)")
     rows, sc = walk_forward(rows, a.label, a.window, model=a.model)
     k = int(len(rows) * a.warmup)
     print(f"warm-up: first {k} PRs used for learning only")
@@ -136,6 +142,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--data"); p.add_argument("--label", default="E_strict", choices=["E", "E_strict", "E_clean"])
     p.add_argument("--window", type=int, default=14); p.add_argument("--warmup", type=float, default=0.3)
+    p.add_argument("--censor-days", type=int, default=14)
     p.add_argument("--model", default="v1", choices=["v1", "v2"])
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args(); selftest() if a.selftest else main(a)
