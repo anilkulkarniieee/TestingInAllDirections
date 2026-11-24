@@ -71,7 +71,7 @@ jobs:
       - name: risk model (no LLM, no API key)
         if: inputs.mode == 'risk'
         run: |
-          python replay_risk.py --data "$DATA" --label ${{ inputs.label }} --warmup ${{ inputs.warmup }} --model ${{ inputs.model }} | tee review_report.txt
+          python replay_risk.py --data "$DATA" --label ${{ inputs.label }} --warmup ${{ inputs.warmup }} --model ${{ inputs.model }} --censor-days 14 | tee review_report.txt
           { echo '### TAD risk model vs baselines (walk-forward)'; echo '```'; cat review_report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: review (LLM agent, optional)
         if: inputs.mode == 'review'
